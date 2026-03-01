@@ -257,9 +257,10 @@ document.addEventListener("DOMContentLoaded", () => {
             // Update progress message
             submitBtn.textContent = "Generating encodings...";
             
-            await apiRequest("/api/generate-encodings", { method: "POST", body: JSON.stringify({}) });
+            // Encode only this student's faces (much faster than re-encoding all students)
+            await apiRequest(`/api/encode-student/${studentId}`, { method: "POST" });
 
-            showNotification("Student registered and encodings refreshed", "success");
+            showNotification("Student registered successfully", "success");
 
             form.reset();
             capturedImages = [];
