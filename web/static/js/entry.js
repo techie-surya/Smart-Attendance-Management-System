@@ -3,8 +3,6 @@ let monitorTimer = null;
 let sessionStopTimer = null;
 let isBusy = false;
 let lastGrayFrame = null;
-let livenessDetector = null;
-let livenessMonitorTimer = null;
 let lastManualScanTime = 0;
 const MANUAL_SCAN_COOLDOWN_MS = 3000; // 3 seconds cooldown between manual scans
 
@@ -12,11 +10,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const root = document.getElementById("entryRoot");
     if (!root) {
         return;
-    }
-
-    // Initialize liveness detector
-    if (typeof LivenessDetector !== 'undefined') {
-        livenessDetector = new LivenessDetector();
     }
 
     const baseScanInterval = Number(root.dataset.scanIntervalMs || 1500);
@@ -28,7 +21,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const video = document.getElementById("liveVideo");
     const canvas = document.getElementById("frameCanvas");
     const cameraPanel = document.getElementById("cameraPanel");
-    const livenessBadge = document.getElementById("livenessBadge");
     const startBtn = document.getElementById("startCameraBtn");
     const stopBtn = document.getElementById("stopCameraBtn");
     const scanBtn = document.getElementById("scanOnceBtn");
@@ -45,8 +37,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const sessionDuration = document.getElementById("sessionDuration");
     const motionThreshold = document.getElementById("motionThreshold");
     const minimumDuration = document.getElementById("minimumDuration");
-    const useLivenessDetection = document.getElementById("useLivenessDetection");
-    const livenessStatusText = document.getElementById("livenessStatusText");
 
     runInterval.value = runInterval.value || String(defaultRunInterval);
     sessionDuration.value = sessionDuration.value || String(defaultSessionDuration);
@@ -153,7 +143,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const stopCamera = () => {
         stopMonitoring();
-        stopLivenessMonitoring();
         if (stream) {
             stream.getTracks().forEach((track) => track.stop());
         }
@@ -208,167 +197,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         lastGrayFrame = current;
         return size ? moved / size : 0;
-    };
-
-    // Liveness Detection Functions
-    const updateLivenessDetectorStatus = () => {
-        if (!livenessStatusText || !useLivenessDetection) {
-            return;
-        }
-
-        if (!livenessDetector) {
-            livenessStatusText.textContent = 'Not Available (Library Missing)';
-            livenessStatusText.style.color = 'var(--warning)';
-            useLivenessDetection.checked = false;
-            useLivenessDetection.disabled = true;
-        } else if (livenessDetector.isInitialized()) {
-            livenessStatusText.textContent = 'Available';
-            livenessStatusText.style.color = 'var(--success)';
-            // Restore user preference
-            const savedPref = localStorage.getItem('SMART_ATTENDANCE_USE_LIVENESS');
-            if (savedPref !== null) {
-                useLivenessDetection.checked = savedPref === 'true';
-            }
-        } else {
-            livenessStatusText.textContent = 'Initialization Failed';
-            livenessStatusText.style.color = 'var(--danger)';
-            useLivenessDetection.checked = false;
-            useLivenessDetection.disabled = true;
-        }
-    };
-
-    const isLivenessEnabled = () => {
-        return useLivenessDetection && useLivenessDetection.checked;
-    };
-
-    const startLivenessMonitoring = () => {
-        // Check if liveness is enabled by user
-        if (!isLivenessEnabled()) {
-            console.info('Liveness detection disabled by user');
-            return;
-        }
-
-        if (!livenessDetector || !livenessDetector.isInitialized()) {
-            console.info('Liveness detection not available');
-            return;
-        }
-
-        // Reset detector state
-        livenessDetector.reset();
-        
-        // Show liveness badge
-        if (livenessBadge) {
-            livenessBadge.hidden = false;
-            livenessBadge.className = 'liveness-badge checking';
-            livenessBadge.textContent = 'Checking Liveness...';
-        }
-
-        if (cameraPanel) {
-            cameraPanel.classList.remove('liveness-verified', 'liveness-failed');
-            cameraPanel.classList.add('liveness-checking');
-        }
-
-        // Start continuous liveness checking
-        livenessMonitorTimer = setInterval(async () => {
-            if (!video || !stream) {
-                stopLivenessMonitoring();
-                return;
-            }
-
-            // Process current frame for liveness
-            await livenessDetector.processFrame(video);
-            
-            // Update visual feedback
-            updateLivenessUI();
-        }, 100); // Check every 100ms
-    };
-
-    const stopLivenessMonitoring = () => {
-        if (livenessMonitorTimer) {
-            clearInterval(livenessMonitorTimer);
-            livenessMonitorTimer = null;
-        }
-
-        if (livenessBadge) {
-            livenessBadge.hidden = true;
-        }
-
-        if (cameraPanel) {
-            cameraPanel.classList.remove('liveness-checking', 'liveness-verified', 'liveness-failed');
-        }
-
-        if (livenessDetector) {
-            livenessDetector.reset();
-        }
-    };
-
-    const updateLivenessUI = () => {
-        if (!livenessDetector || !cameraPanel || !livenessBadge) {
-            return;
-        }
-
-        const livenessResult = livenessDetector.getLivenessScore();
-
-        if (livenessResult.isLive && livenessResult.score >= 60) {
-            // Verified live person
-            cameraPanel.classList.remove('liveness-checking', 'liveness-failed');
-            cameraPanel.classList.add('liveness-verified');
-            livenessBadge.className = 'liveness-badge verified';
-            livenessBadge.textContent = 'Live Person Detected';
-        } else if (livenessResult.score > 0 && livenessResult.score < 60) {
-            // Checking in progress
-            cameraPanel.classList.remove('liveness-verified', 'liveness-failed');
-            cameraPanel.classList.add('liveness-checking');
-            livenessBadge.className = 'liveness-badge checking';
-            livenessBadge.textContent = `Verifying... (${livenessResult.score}%)`;
-        } else if (livenessResult.score === 0) {
-            // Still checking
-            cameraPanel.classList.remove('liveness-verified', 'liveness-failed');
-            cameraPanel.classList.add('liveness-checking');
-            livenessBadge.className = 'liveness-badge checking';
-            livenessBadge.textContent = 'Checking Liveness...';
-        }
-    };
-
-    const checkLivenessBeforeScan = () => {
-        // If liveness is disabled by user, skip check
-        if (!isLivenessEnabled()) {
-            return { allowed: true, reason: 'liveness_disabled' };
-        }
-
-        if (!livenessDetector || !livenessDetector.isInitialized()) {
-            // Liveness detection not available, allow scan
-            return { allowed: true, reason: 'liveness_not_available' };
-        }
-
-        const livenessResult = livenessDetector.getLivenessScore();
-
-        if (!livenessResult.isLive) {
-            // Failed liveness check
-            if (cameraPanel) {
-                cameraPanel.classList.remove('liveness-checking', 'liveness-verified');
-                cameraPanel.classList.add('liveness-failed');
-            }
-            if (livenessBadge) {
-                livenessBadge.className = 'liveness-badge failed';
-                livenessBadge.textContent = 'Liveness Check Failed';
-            }
-
-            // Show detailed reason
-            const details = livenessResult.details;
-            let reason = 'Please ensure you are a live person. ';
-            if (!details.hasBlinks) {
-                reason += 'Blink your eyes naturally. ';
-            }
-            if (!details.hasMotion) {
-                reason += 'Move your head slightly. ';
-            }
-
-            return { allowed: false, reason };
-        }
-
-        // Passed liveness check
-        return { allowed: true, livenessData: livenessResult };
     };
 
     const renderRecent = (entries) => {
@@ -454,14 +282,6 @@ document.addEventListener("DOMContentLoaded", () => {
             lastManualScanTime = now;
         }
 
-        // Check liveness before scanning
-        const livenessCheck = checkLivenessBeforeScan();
-        if (!livenessCheck.allowed) {
-            setStatus("Liveness Failed");
-            showNotification(livenessCheck.reason, "warning");
-            return;
-        }
-
         const capture = captureFrame();
         if (!capture) {
             return;
@@ -481,15 +301,10 @@ document.addEventListener("DOMContentLoaded", () => {
         setStatus("Scanning...");
 
         try {
-            // Include liveness data in the request
             const requestBody = {
                 image: capture.jpeg,
                 subject: activeSubject.value
             };
-
-            if (livenessCheck.livenessData) {
-                requestBody.liveness = livenessCheck.livenessData;
-            }
 
             const data = await apiRequest("/api/recognize-entry", {
                 method: "POST",
@@ -545,10 +360,6 @@ document.addEventListener("DOMContentLoaded", () => {
             scanBtn.disabled = false;
             setStatus("Camera On");
             updateMonitorButton();
-            
-            // Start liveness monitoring
-            startLivenessMonitoring();
-            
             showNotification("Entry camera started", "success");
 
             if (cameraPolicy.value === "always_on" && getSelectedMode() !== "once") {
@@ -613,31 +424,71 @@ document.addEventListener("DOMContentLoaded", () => {
     motionThreshold.addEventListener("change", onSettingsChanged);
     minimumDuration.addEventListener("change", onSettingsChanged);
 
-    // Liveness detection toggle
-    if (useLivenessDetection) {
-        useLivenessDetection.addEventListener("change", () => {
-            const enabled = useLivenessDetection.checked;
-            localStorage.setItem('SMART_ATTENDANCE_USE_LIVENESS', enabled.toString());
+    // Manual attendance handling
+    const manualStudentSelect = document.getElementById("manualStudentSelect");
+    const manualEntryBtn = document.getElementById("manualEntryBtn");
+
+    const loadStudents = async () => {
+        try {
+            const data = await apiRequest("/api/students");
+            const students = data.students || [];
             
-            if (enabled && stream) {
-                startLivenessMonitoring();
-                showNotification("Liveness detection enabled", "info");
-            } else {
-                stopLivenessMonitoring();
-                showNotification("Liveness detection disabled", "info");
-            }
-        });
-    }
+            manualStudentSelect.innerHTML = '<option value="">-- Select Student --</option>';
+            students.forEach(student => {
+                const option = document.createElement("option");
+                option.value = student.student_id;
+                option.textContent = `${student.name} (${student.roll_number})`;
+                option.dataset.name = student.name;
+                manualStudentSelect.appendChild(option);
+            });
+        } catch (error) {
+            showNotification("Failed to load students: " + error.message, "error");
+        }
+    };
+
+    manualStudentSelect.addEventListener("change", () => {
+        manualEntryBtn.disabled = !manualStudentSelect.value;
+    });
+
+    manualEntryBtn.addEventListener("click", async () => {
+        const studentId = manualStudentSelect.value;
+        if (!studentId) {
+            showNotification("Please select a student", "warning");
+            return;
+        }
+
+        const selectedOption = manualStudentSelect.options[manualStudentSelect.selectedIndex];
+        const studentName = selectedOption.dataset.name;
+
+        if (!activeSubject.value) {
+            showNotification("Please select an active subject", "warning");
+            return;
+        }
+
+        try {
+            manualEntryBtn.disabled = true;
+            const data = await apiRequest("/api/mark-entry", {
+                method: "POST",
+                body: JSON.stringify({
+                    student_id: studentId,
+                    name: studentName,
+                    subject: activeSubject.value
+                })
+            });
+
+            showNotification(`${studentName} marked inside manually`, "success");
+            showResult(data);
+            await loadRecent();
+            manualStudentSelect.value = "";
+        } catch (error) {
+            showNotification("Manual entry failed: " + error.message, "error");
+            manualEntryBtn.disabled = false;
+        }
+    });
 
     window.addEventListener("beforeunload", stopCamera);
     updateUIFeatureAvailability();
     updateMonitorButton();
     loadRecent();
-    
-    // Update liveness detector status after all functions are defined
-    if (livenessDetector) {
-        setTimeout(updateLivenessDetectorStatus, 2000);
-    } else {
-        updateLivenessDetectorStatus();
-    }
+    loadStudents();
 });

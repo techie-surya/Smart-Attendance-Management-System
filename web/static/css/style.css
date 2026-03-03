@@ -476,34 +476,6 @@ h1, h2, h3 {
     transition: var(--transition);
 }
 
-/* Liveness Detection Visual Feedback */
-.camera-panel.liveness-checking {
-    border: 3px solid #3b82f6;
-    box-shadow: 0 0 20px rgba(59, 130, 246, 0.4), var(--shadow-lg);
-    animation: liveness-pulse 2s ease-in-out infinite;
-}
-
-.camera-panel.liveness-verified {
-    border: 3px solid #10b981;
-    box-shadow: 0 0 20px rgba(16, 185, 129, 0.4), var(--shadow-lg);
-}
-
-.camera-panel.liveness-failed {
-    border: 3px solid #ef4444;
-    box-shadow: 0 0 20px rgba(239, 68, 68, 0.4), var(--shadow-lg);
-}
-
-@keyframes liveness-pulse {
-    0%, 100% {
-        border-color: #3b82f6;
-        box-shadow: 0 0 20px rgba(59, 130, 246, 0.4), var(--shadow-lg);
-    }
-    50% {
-        border-color: #60a5fa;
-        box-shadow: 0 0 30px rgba(96, 165, 250, 0.6), var(--shadow-xl);
-    }
-}
-
 .camera-panel:hover {
     border-color: rgba(13, 148, 136, 0.5);
     box-shadow: var(--shadow-xl);
@@ -532,34 +504,6 @@ h1, h2, h3 {
     color: #0a2429;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     backdrop-filter: blur(8px);
-}
-
-.liveness-badge {
-    position: absolute;
-    top: 0.9rem;
-    left: 0.9rem;
-    padding: 0.35rem 0.7rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    backdrop-filter: blur(8px);
-    transition: var(--transition);
-}
-
-.liveness-badge.checking {
-    background: rgba(59, 130, 246, 0.95);
-    color: white;
-}
-
-.liveness-badge.verified {
-    background: rgba(16, 185, 129, 0.95);
-    color: white;
-}
-
-.liveness-badge.failed {
-    background: rgba(239, 68, 68, 0.95);
-    color: white;
 }
 
 .toolbar {

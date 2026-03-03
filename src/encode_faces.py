@@ -68,7 +68,7 @@ class FaceEncoder:
         print("\n" + "="*60)
         print("GENERATING FACE ENCODINGS")
         print("="*60)
-        print(f"Detection Model: HOG (2x upsample for quality)")
+        print(f"Detection Model: HOG (1x upsample for speed/quality balance)")
         print(f"Encoding Model: {self.encoding_model}")
         print("-"*60)
         
@@ -89,13 +89,12 @@ class FaceEncoder:
                 # Load image
                 image = face_recognition.load_image_file(img_path)
                 
-                # Use HOG with 2x upsample for best speed/quality balance
-                # 2x upsample finds smaller faces and improves quality
-                # Much faster than CNN while maintaining good accuracy
+                # Use HOG with 1x upsample for speed/quality balance
+                # Matches the validation step for consistency
                 face_locations = face_recognition.face_locations(
                     image, 
                     model="hog",
-                    number_of_times_to_upsample=2  # Higher upsample for quality
+                    number_of_times_to_upsample=1  # Consistent with validation
                 )
                 
                 # Generate encodings using the "large" model for best accuracy
@@ -230,11 +229,11 @@ class FaceEncoder:
                 img_path = os.path.join(student_folder, img_file)
                 image = face_recognition.load_image_file(img_path)
                 
-                # Use HOG with 2x upsample for quality
+                # Use HOG with 1x upsample matching validation
                 face_locations = face_recognition.face_locations(
                     image, 
                     model="hog",
-                    number_of_times_to_upsample=2
+                    number_of_times_to_upsample=1  # Consistent with validation
                 )
                 
                 encodings = face_recognition.face_encodings(

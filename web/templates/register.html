@@ -28,7 +28,7 @@
 
                     <div class="camera-panel">
                         <video id="videoPreview" autoplay playsinline muted></video>
-                        <canvas id="captureCanvas" hidden></canvas>
+                        <canvas id="captureCanvas" style="display: none;"></canvas>
                         <div class="camera-badge" id="captureCount">0 / {{ images_per_student }}</div>
                     </div>
 
@@ -57,10 +57,11 @@
                     <li>Keep camera at eye level.</li>
                     <li>Capture slight pose variations (front, left, right).</li>
                     <li>Use stable and even lighting.</li>
-                    <li>Keep one face in the frame.</li>
-                    <li>Wait for auto-capture to complete before submitting.</li>
+                    <li>Keep one face centered in the frame.</li>
+                    <li><strong>Hold steady during auto-capture</strong> - images blur during movement.</li>
                     <li>Use a neutral expression.</li>
                     <li>Avoid glasses glare or face coverings.</li>
+                    <li>System validates each image - only clear faces are saved.</li>
                 </ul>
             </div>
         </aside>
@@ -69,5 +70,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/register.js') }}"></script>
+<script src="{{ url_for('static', filename='js/register.js') }}?v=3"></script>
 {% endblock %}

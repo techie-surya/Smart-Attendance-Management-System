@@ -1,7 +1,7 @@
 """Flask web app for Smart Attendance Management System."""
 
-import logging
 import os
+import logging
 import sys
 import time
 import uuid
@@ -78,7 +78,16 @@ app.config["PROPAGATE_EXCEPTIONS"] = True  # Better error handling
 db = DatabaseManager()
 report_gen = ReportGenerator()
 attendance_mgr = AttendanceManager()
-recognizer = RecognitionService()
+
+# Initialize recognizer with error handling
+try:
+    recognizer = RecognitionService()
+    logger.info("Recognition service initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize recognition service: {e}")
+    logger.warning("Server will start but face recognition may not work until encodings are generated")
+    recognizer = RecognitionService()  # Create with default state
+
 rate_limiter = RateLimiter(
     window_seconds=config.RATE_LIMIT_WINDOW_SECONDS,
     max_requests=config.RATE_LIMIT_MAX_REQUESTS,
@@ -274,46 +283,6 @@ def _inside_payload(limit=config.MAX_RECENT_ITEMS):
     ]
 
 
-def _validate_liveness(liveness_data):
-    """
-    Validate liveness detection data from client.
-    Returns True if liveness check passes or is not available.
-    Returns False if liveness check fails.
-    """
-    if not liveness_data or not isinstance(liveness_data, dict):
-        # Liveness data not provided - allow for backward compatibility
-        logger.info("Liveness data not provided - allowing request")
-        return True
-    
-    # Check if liveness is verified
-    is_live = liveness_data.get('isLive', False)
-    score = liveness_data.get('score', 0)
-    details = liveness_data.get('details', {})
-    
-    # Log liveness check for audit trail
-    logger.info(f"Liveness check: isLive={is_live}, score={score}, details={details}")
-    
-    # Very lenient validation - primarily for logging, rarely blocks
-    # This ensures the system works even with mediocre liveness scores
-    if not is_live:
-        logger.warning(f"Liveness not verified: score={score}, details={details}")
-        # Still allow if score is reasonable (not blocking anymore)
-        if score < 30:  # Only block extremely low scores
-            logger.warning(f"Liveness score critically low: {score}")
-            return False
-    
-    # Just need face detection - blinks and motion are optional
-    has_face = details.get('hasFaceDetection', True)  # Default true for backward compatibility
-    
-    if not has_face:
-        logger.warning(f"No face detected in liveness check")
-        # Don't block - let face recognition handle it
-        return True
-    
-    logger.info(f"Liveness check passed: score={score}")
-    return True
-
-
 def _recognize_or_error(image_data):
     if not image_data:
         return None, _json_error("image payload is required", 400)
@@ -387,15 +356,19 @@ def _handle_payload_too_large(_exc):
 
 @app.errorhandler(Exception)
 def _handle_unexpected_error(exc):
-    logger.exception("Unhandled exception")
+    # Log the full traceback
+    logger.exception("Unhandled exception - server continuing")
+    
     # Handle HTTP exceptions (404, 500, etc.) properly
     if isinstance(exc, HTTPException):
         if request.path.startswith("/api/"):
             return _json_error(exc.description or "error", exc.code or 500)
         return exc
+    
     # For non-HTTP exceptions
     if request.path.startswith("/api/"):
-        return _json_error("internal server error", 500)
+        return _json_error("internal server error - check logs for details", 500)
+    
     return render_template("base.html"), 500
 
 
@@ -525,6 +498,26 @@ def api_health():
     )
 
 
+@app.route("/api/students", methods=["GET"])
+def api_get_students():
+    """Get list of all registered students for manual attendance."""
+    try:
+        students = db.get_all_students()
+        # get_all_students returns tuples: (student_id, name, roll_number, registered_date)
+        student_list = [
+            {
+                "student_id": s[0],
+                "name": s[1],
+                "roll_number": s[2],
+            }
+            for s in students
+        ]
+        return jsonify({"success": True, "students": student_list})
+    except Exception as e:
+        logger.error(f"Error fetching students list: {e}")
+        return _json_error("failed to load students", 500)
+
+
 @app.route("/api/register-student", methods=["POST"])
 def register_student():
     data = _json_body()
@@ -540,134 +533,156 @@ def register_student():
 
 @app.route("/api/save-face-images", methods=["POST"])
 def save_face_images():
-    data = _json_body()
-    student_id = validate_student_id(data.get("student_id"))
-    images = data.get("images") or []
-
-    if not isinstance(images, list) or not images:
-        raise ValidationError("at least one image is required")
-    if len(images) > config.MAX_IMAGES_PER_UPLOAD:
-        raise ValidationError(
-            f"too many images in one request (max {config.MAX_IMAGES_PER_UPLOAD})"
-        )
-
-    folder_path = _safe_dataset_folder(student_id)
-    os.makedirs(folder_path, exist_ok=True)
-
-    saved_count = 0
-    no_face_count = 0
-    invalid_count = 0
-    
-    def process_single_image(index_and_payload):
-        """Process a single image for face detection - designed for parallel execution."""
-        index, image_payload = index_and_payload
-        try:
-            # Validate and decode base64 image
-            image_bytes = validate_base64_image(image_payload)
-            image = Image.open(BytesIO(image_bytes)).convert("RGB")
-            
-            # Convert PIL image to numpy array for face detection
-            image_np = np.array(image)
-            
-            # Detect faces using HOG (fast) with minimal upsampling for speed
-            face_locations = face_recognition.face_locations(
-                image_np, 
-                model="hog",
-                number_of_times_to_upsample=0  # Reduced from 1 for faster processing
-            )
-            
-            if len(face_locations) > 0:
-                return ("success", image, index)
-            else:
-                logger.info(f"Image {index} skipped - no face detected (student_id={student_id})")
-                return ("no_face", None, index)
-                
-        except ValidationError:
-            return ("invalid", None, index)
-        except Exception as e:
-            logger.warning("invalid image skipped at index=%s for student_id=%s: %s", index, student_id, str(e))
-            return ("invalid", None, index)
-    
-    # Process images in parallel with timeout protection
-    max_workers = min(4, len(images))  # Limit concurrent workers
-    timeout_per_batch = 30  # 30 seconds total timeout
-    
+    """Save face images for a student after validation."""
     try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks
-            futures = {
-                executor.submit(process_single_image, (i, img)): i 
-                for i, img in enumerate(images, start=1)
-            }
-            
-            # Collect results with timeout
-            results = []
-            start_time = time.time()
-            for future in futures:
-                remaining_time = timeout_per_batch - (time.time() - start_time)
-                if remaining_time <= 0:
-                    logger.warning(f"Image processing timeout for student_id={student_id}")
-                    break
+        data = _json_body()
+        student_id = validate_student_id(data.get("student_id"))
+        images = data.get("images") or []
+
+        if not isinstance(images, list) or not images:
+            raise ValidationError("at least one image is required")
+        if len(images) > config.MAX_IMAGES_PER_UPLOAD:
+            raise ValidationError(
+                f"too many images in one request (max {config.MAX_IMAGES_PER_UPLOAD})"
+            )
+
+        folder_path = _safe_dataset_folder(student_id)
+        os.makedirs(folder_path, exist_ok=True)
+
+        saved_count = 0
+        no_face_count = 0
+        invalid_count = 0
+        
+        def process_single_image(index_and_payload):
+            """Process a single image for face detection - designed for parallel execution."""
+            index, image_payload = index_and_payload
+            try:
+                # Validate and decode base64 image
+                image_bytes = validate_base64_image(image_payload)
+                image = Image.open(BytesIO(image_bytes)).convert("RGB")
+                
+                # Convert PIL image to numpy array for face detection
+                image_np = np.array(image)
+                
+                # Detect faces using HOG with same upsampling as encoding (consistency)
+                # Using upsample=1 balances speed with reliable face detection
+                face_locations = face_recognition.face_locations(
+                    image_np, 
+                    model="hog",
+                    number_of_times_to_upsample=1  # Match encoding for consistency
+                )
+                
+                if len(face_locations) > 0:
+                    return ("success", image, index)
+                else:
+                    logger.info(f"Image {index} skipped - no face detected (student_id={student_id})")
+                    return ("no_face", None, index)
                     
+            except ValidationError:
+                return ("invalid", None, index)
+            except Exception as e:
+                logger.warning("invalid image skipped at index=%s for student_id=%s: %s", index, student_id, str(e))
+                return ("invalid", None, index)
+        
+        # Process images in parallel with timeout protection
+        max_workers = min(4, len(images))  # Limit concurrent workers
+        timeout_per_batch = 30  # 30 seconds total timeout
+        
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
+                futures = {
+                    executor.submit(process_single_image, (i, img)): i 
+                    for i, img in enumerate(images, start=1)
+                }
+                
+                # Collect results with timeout
+                results = []
+                start_time = time.time()
+                for future in futures:
+                    remaining_time = timeout_per_batch - (time.time() - start_time)
+                    if remaining_time <= 0:
+                        logger.warning(f"Image processing timeout for student_id={student_id}")
+                        break
+                        
+                    try:
+                        result = future.result(timeout=remaining_time)
+                        results.append(result)
+                    except FuturesTimeoutError:
+                        logger.warning(f"Image processing timeout for student_id={student_id}")
+                        break
+                    except Exception as e:
+                        logger.warning(f"Image processing error: {e}")
+                        results.append(("invalid", None, futures[future]))
+                        
+        except Exception as e:
+            logger.error(f"Parallel processing failed for student_id={student_id}: {e}")
+            raise ValidationError("image processing failed - please try again with fewer images")
+        
+        # Save successfully processed images
+        for status, image, index in results:
+            if status == "success":
                 try:
-                    result = future.result(timeout=remaining_time)
-                    results.append(result)
-                except FuturesTimeoutError:
-                    logger.warning(f"Image processing timeout for student_id={student_id}")
-                    break
+                    image.save(os.path.join(folder_path, f"img{saved_count + 1}.jpg"), "JPEG", quality=85)
+                    saved_count += 1
                 except Exception as e:
-                    logger.warning(f"Image processing error: {e}")
-                    results.append(("invalid", None, futures[future]))
-                    
-    except Exception as e:
-        logger.error(f"Parallel processing failed for student_id={student_id}: {e}")
-        raise ValidationError("image processing failed - please try again with fewer images")
-    
-    # Save successfully processed images
-    for status, image, index in results:
-        if status == "success":
-            image.save(os.path.join(folder_path, f"img{saved_count + 1}.jpg"), "JPEG", quality=85)
-            saved_count += 1
-        elif status == "no_face":
-            no_face_count += 1
-        elif status == "invalid":
-            invalid_count += 1
+                    logger.error(f"Failed to save image {index}: {e}")
+                    invalid_count += 1
+            elif status == "no_face":
+                no_face_count += 1
+            elif status == "invalid":
+                invalid_count += 1
 
-    # Require at least 3 images with faces for reliable encoding
-    min_required_images = 3
-    if saved_count < min_required_images:
-        # Clean up any saved images if we don't have enough
-        if os.path.exists(folder_path):
-            for file in os.listdir(folder_path):
-                os.remove(os.path.join(folder_path, file))
-        
-        # Provide detailed error message with guidance
-        error_parts = []
-        error_parts.append(f"Only {saved_count} out of {len(images)} images had detectable faces (minimum {min_required_images} required).\n")
-        
-        if no_face_count > 0:
-            error_parts.append(f"{no_face_count} images had no face detected.")
-        if invalid_count > 0:
-            error_parts.append(f"{invalid_count} images were invalid.")
+        # Require at least 5 images with faces for reliable encoding
+        # Reduced from previous higher requirements for better user experience
+        min_required_images = 5
+        if saved_count < min_required_images:
+            # Clean up any saved images if we don't have enough
+            if os.path.exists(folder_path):
+                try:
+                    for file in os.listdir(folder_path):
+                        os.remove(os.path.join(folder_path, file))
+                    os.rmdir(folder_path)  # Remove empty folder too
+                except Exception as e:
+                    logger.error(f"Failed to cleanup folder {folder_path}: {e}")
             
-        error_parts.append("\nPlease ensure:")
-        error_parts.append("• Your face is clearly visible and centered")
-        error_parts.append("• You are in a well-lit area (avoid backlighting)")
-        error_parts.append("• The camera lens is clean and in focus")
-        error_parts.append("• You are facing the camera directly")
-        
-        raise ValidationError("\n".join(error_parts))
+            # Provide detailed error message with guidance
+            error_parts = []
+            error_parts.append(f"Only {saved_count} out of {len(images)} images had detectable faces (minimum {min_required_images} required).\n")
+            
+            if no_face_count > 0:
+                error_parts.append(f"{no_face_count} images had no face detected.")
+            if invalid_count > 0:
+                error_parts.append(f"{invalid_count} images were invalid.")
+                
+            error_parts.append("\nPlease ensure:")
+            error_parts.append("• Your face is clearly visible and centered")
+            error_parts.append("• You are in a well-lit area (avoid backlighting)")
+            error_parts.append("• The camera lens is clean and in focus")
+            error_parts.append("• You are facing the camera directly")
+            
+            error_message = "\n".join(error_parts)
+            logger.warning(f"Face validation failed for {student_id}: {saved_count}/{len(images)} valid (need {min_required_images})")
+            raise ValidationError(error_message)
 
-    return jsonify({
-        "success": True, 
-        "message": f"saved {saved_count} images with detected faces",
-        "details": {
-            "saved": saved_count,
-            "no_face_detected": no_face_count,
-            "invalid": invalid_count,
-            "total_submitted": len(images)
-        }
-    })
+        logger.info(f"Successfully saved {saved_count} images for {student_id}")
+        return jsonify({
+            "success": True, 
+            "message": f"saved {saved_count} images with detected faces",
+            "details": {
+                "saved": saved_count,
+                "no_face_detected": no_face_count,
+                "invalid": invalid_count,
+                "total_submitted": len(images)
+            }
+        })
+        
+    except ValidationError as e:
+        logger.warning(f"Validation error in save_face_images: {e}")
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error in save_face_images")
+        return _json_error(f"image processing failed: {str(e)}", 500)
 
 
 @app.route("/api/encode-student/<student_id>", methods=["POST"])
@@ -675,28 +690,37 @@ def encode_student(student_id):
     """Encode faces for a single student. MUCH faster than re-encoding all students.
     This is automatically called after saving face images for a new student.
     """
-    student_id = validate_student_id(student_id)
-    
-    logger.info(f"Encoding faces for student: {student_id}")
-    start_time = time.time()
-    
-    encoder = FaceEncoder()
-    success, num_encoded = encoder.encode_single_student(student_id)
-    
-    elapsed = time.time() - start_time
-    logger.info(f"Student encoding completed in {elapsed:.2f}s - {num_encoded} faces encoded")
-    
-    if success:
-        # Reload encodings in recognizer
-        recognizer.load_encodings(force=True)
-        return jsonify({
-            "success": True,
-            "message": f"encoded {num_encoded} faces for {student_id}",
-            "elapsed_seconds": round(elapsed, 2),
-            "num_faces_encoded": num_encoded
-        })
-    
-    return _json_error(f"failed to encode faces for {student_id}", 500)
+    try:
+        student_id = validate_student_id(student_id)
+        
+        logger.info(f"Encoding faces for student: {student_id}")
+        start_time = time.time()
+        
+        encoder = FaceEncoder()
+        success, num_encoded = encoder.encode_single_student(student_id)
+        
+        elapsed = time.time() - start_time
+        logger.info(f"Student encoding completed in {elapsed:.2f}s - {num_encoded} faces encoded")
+        
+        if success:
+            # Reload encodings in recognizer
+            recognizer.load_encodings(force=True)
+            return jsonify({
+                "success": True,
+                "message": f"encoded {num_encoded} faces for {student_id}",
+                "elapsed_seconds": round(elapsed, 2),
+                "num_faces_encoded": num_encoded
+            })
+        
+        logger.error(f"Failed to encode faces for {student_id}")
+        return _json_error(f"failed to encode faces for {student_id}", 500)
+        
+    except ValidationError as e:
+        logger.error(f"Validation error in encode_student: {e}")
+        return _json_error(str(e), 400)
+    except Exception as e:
+        logger.exception(f"Unexpected error encoding student {student_id}")
+        return _json_error(f"encoding failed: {str(e)}", 500)
 
 
 @app.route("/api/generate-encodings", methods=["POST"])
@@ -729,14 +753,9 @@ def generate_encodings():
 def recognize_entry():
     data = _json_body()
     image_data = data.get("image")
-    liveness_data = data.get("liveness")
     subject = validate_subject(data.get("subject"), "subject", allow_empty=True)
     if not subject:
         subject = db.get_setting("active_subject", config.DEFAULT_SUBJECT)
-    
-    # Validate liveness if data is provided
-    if liveness_data and not _validate_liveness(liveness_data):
-        return _json_error("liveness check failed - please ensure you are a live person and blink naturally", 403)
     
     match, error_response = _recognize_or_error(image_data)
     if error_response:
@@ -759,11 +778,10 @@ def recognize_entry():
     entry_time = entry_result["entry_time"]
     entry_subject = entry_result.get("subject", subject)
     
-    # Log successful entry with liveness status and subject
-    liveness_status = "verified" if liveness_data else "not_checked"
+    # Log successful entry with subject
     logger.info(
         f"Entry marked: {name} ({student_id}) at {entry_time} - "
-        f"subject: {entry_subject} - liveness: {liveness_status}"
+        f"subject: {entry_subject}"
     )
     
     return jsonify(
@@ -784,14 +802,9 @@ def recognize_entry():
 def recognize_exit():
     data = _json_body()
     image_data = data.get("image")
-    liveness_data = data.get("liveness")
     subject = validate_subject(data.get("subject"), "subject", allow_empty=True)
     if not subject:
         subject = db.get_setting("active_subject", config.DEFAULT_SUBJECT)
-    
-    # Validate liveness if data is provided
-    if liveness_data and not _validate_liveness(liveness_data):
-        return _json_error("liveness check failed - please ensure you are a live person and blink naturally", 403)
     
     match, error_response = _recognize_or_error(image_data)
     if error_response:
@@ -817,11 +830,10 @@ def recognize_exit():
             404
         )
 
-    # Log successful exit with liveness status and subject
-    liveness_status = "verified" if liveness_data else "not_checked"
+    # Log successful exit with subject
     logger.info(
         f"Exit marked: {name} ({student_id}) - subject: {exit_result.get('subject', subject)} - "
-        f"liveness: {liveness_status}, status: {exit_result['status']}"
+        f"status: {exit_result['status']}"
     )
 
     return jsonify(
@@ -1247,22 +1259,38 @@ def startup_cleanup():
 
 
 if __name__ == "__main__":
-    os.makedirs(config.DATASET_PATH, exist_ok=True)
-    os.makedirs(config.ENCODINGS_PATH, exist_ok=True)
-    os.makedirs(config.DATABASE_PATH, exist_ok=True)
-    os.makedirs(config.LOGS_PATH, exist_ok=True)
-    os.makedirs(config.REPORTS_PATH, exist_ok=True)
+    try:
+        os.makedirs(config.DATASET_PATH, exist_ok=True)
+        os.makedirs(config.ENCODINGS_PATH, exist_ok=True)
+        os.makedirs(config.DATABASE_PATH, exist_ok=True)
+        os.makedirs(config.LOGS_PATH, exist_ok=True)
+        os.makedirs(config.REPORTS_PATH, exist_ok=True)
 
-    # Run startup cleanup
-    startup_cleanup()
+        # Run startup cleanup (with error handling)
+        try:
+            startup_cleanup()
+        except Exception as e:
+            logger.error(f"Startup cleanup failed (continuing anyway): {e}")
 
-    # Enable threaded mode for concurrent request handling
-    # This allows multiple students to mark entry/exit simultaneously
-    app.run(
-        debug=config.FLASK_DEBUG, 
-        host=config.FLASK_HOST, 
-        port=config.FLASK_PORT,
-        threaded=True,  # Enable multi-threading for concurrent requests
-        use_reloader=False  # Disable reloader to prevent double cleanup
-    )
+        logger.info("="*60)
+        logger.info("Smart Attendance System - Server Starting")
+        logger.info("="*60)
+        logger.info(f"Host: {config.FLASK_HOST}")
+        logger.info(f"Port: {config.FLASK_PORT}")
+        logger.info(f"Debug: {config.FLASK_DEBUG}")
+        logger.info(f"Concurrent requests: Enabled (threaded=True)")
+        logger.info("="*60)
+
+        # Enable threaded mode for concurrent request handling
+        # This allows multiple students to mark entry/exit simultaneously
+        app.run(
+            debug=config.FLASK_DEBUG, 
+            host=config.FLASK_HOST, 
+            port=config.FLASK_PORT,
+            threaded=True,  # Enable multi-threading for concurrent requests
+            use_reloader=False  # Disable reloader to prevent double cleanup
+        )
+    except Exception as e:
+        logger.critical(f"Server failed to start: {e}", exc_info=True)
+        raise
 

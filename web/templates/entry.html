@@ -27,9 +27,6 @@
                 <div class="camera-panel large" id="cameraPanel">
                     <video id="liveVideo" autoplay playsinline muted></video>
                     <canvas id="frameCanvas" hidden></canvas>
-                    <div class="liveness-badge checking" id="livenessBadge" hidden>
-                        🔍 Checking Liveness...
-                    </div>
                 </div>
 
                 <div class="toolbar">
@@ -102,13 +99,6 @@
                             YOLO Status: <strong style="color: var(--warning);">Not Available</strong>
                         {% endif %}
                     </p>
-                    <label class="toggle">
-                        <input id="useLivenessDetection" type="checkbox" checked>
-                        <span>Enable Liveness Detection</span>
-                    </label>
-                    <p class="meta-note" id="livenessStatus">
-                        Liveness Status: <strong id="livenessStatusText" style="color: var(--info);">Loading...</strong>
-                    </p>
                     <p class="meta-note">Minimum duration determines PRESENT/ABSENT status. If time spent is below minimum, student is marked ABSENT.</p>
                     <p class="meta-note">Run Once = single click, Session = continuous monitoring until timer ends, Timed Fair Check = periodic recognition with movement check.</p>
                 </div>
@@ -122,12 +112,34 @@
                     <div id="recentEntriesList" class="activity-list"></div>
                 </div>
             </section>
+
+            <section class="card">
+                <div class="card-head">
+                    <h2>📝 Manual Entry</h2>
+                </div>
+                <div class="card-body">
+                    <p class="meta-note" style="margin-bottom: 12px;">
+                        <strong>Fallback Option:</strong> Use this if camera/recognition fails.
+                    </p>
+                    <label class="field">
+                        <span>Select Student</span>
+                        <select id="manualStudentSelect" class="input">
+                            <option value="">-- Choose Student --</option>
+                        </select>
+                    </label>
+                    <button id="manualEntryBtn" class="btn btn-primary" style="width: 100%;" disabled>
+                        Mark Entry Manually
+                    </button>
+                    <p class="meta-note" style="margin-top: 8px; font-size: 0.85em; color: var(--info);">
+                        This will mark the selected student as entered for the active subject.
+                    </p>
+                </div>
+            </section>
         </aside>
     </div>
 </section>
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/liveness_detector.js') }}"></script>
 <script src="{{ url_for('static', filename='js/entry.js') }}"></script>
 {% endblock %}

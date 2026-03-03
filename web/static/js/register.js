@@ -81,6 +81,9 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         if (!video.videoWidth || !video.videoHeight) {
+            console.warn("Video not ready - dimensions:", video.videoWidth, video.videoHeight);
+            showNotification("Video not ready - please wait a moment", "warning");
+            stopAutoCapture();
             return;
         }
 
@@ -116,6 +119,15 @@ document.addEventListener("DOMContentLoaded", () => {
                 audio: false,
             });
             video.srcObject = stream;
+            
+            // Wait for video to be ready before enabling capture
+            await new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    video.play();
+                    resolve();
+                };
+            });
+            
             startBtn.disabled = true;
             stopBtn.disabled = false;
             autoBtn.disabled = false;
@@ -145,14 +157,30 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
+        // Verify video is ready before starting
+        if (!video.videoWidth || !video.videoHeight) {
+            showNotification("Camera is loading - please wait and try again", "warning");
+            return;
+        }
+
         captureState.running = true;
         autoBtn.textContent = "Pause Capture";
-        autoCaptureTimer = setInterval(() => {
+        showNotification("Auto-capture starting - hold steady!", "success");
+        
+        // Brief delay before first capture to let user get ready
+        setTimeout(() => {
+            if (!captureState.running) return; // User may have paused
+            
             captureFrame();
-            if (capturedImages.length >= totalImages) {
-                stopAutoCapture();
-            }
-        }, 300);
+            
+            // Then continue at slower intervals for better quality
+            autoCaptureTimer = setInterval(() => {
+                captureFrame();
+                if (capturedImages.length >= totalImages) {
+                    stopAutoCapture();
+                }
+            }, 600); // Slower interval = better quality, less motion blur
+        }, 800); // Initial delay to let user steady themselves
     });
 
     clearBtn.addEventListener("click", () => {
@@ -229,16 +257,7 @@ document.addEventListener("DOMContentLoaded", () => {
         submitBtn.textContent = "Registering...";
 
         try {
-            await apiRequest("/api/register-student", {
-                method: "POST",
-                body: JSON.stringify({
-                    student_id: studentId,
-                    name,
-                    roll_number: rollNumber,
-                }),
-            });
-
-            // Update progress message
+            // Step 1: Validate images FIRST (before registering in database)
             submitBtn.textContent = "Validating images...";
             
             const saveResult = await apiRequest("/api/save-face-images", {
@@ -254,7 +273,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 console.log("Face validation results:", saveResult.details);
             }
 
-            // Update progress message
+            // Step 2: Register student in database (only if images passed validation)
+            submitBtn.textContent = "Registering student...";
+            
+            await apiRequest("/api/register-student", {
+                method: "POST",
+                body: JSON.stringify({
+                    student_id: studentId,
+                    name,
+                    roll_number: rollNumber,
+                }),
+            });
+
+            // Step 3: Generate face encodings
             submitBtn.textContent = "Generating encodings...";
             
             // Encode only this student's faces (much faster than re-encoding all students)
