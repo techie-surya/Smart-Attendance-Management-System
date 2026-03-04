@@ -2,7 +2,7 @@
 
 **AI-Powered Face Recognition Attendance System**
 
-A real-time facial recognition-based attendance management system built with Flask, Python, and modern web technologies. This system automates attendance tracking for educational institutions using advanced face detection and recognition algorithms.
+The real-time facial recognition-based attendance management system built with Flask, Python, and modern web technologies. This system automates attendance tracking for educational institutions using advanced face detection and recognition algorithms.....
 
 ---
 
